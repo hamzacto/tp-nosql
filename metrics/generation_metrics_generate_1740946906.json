@@ -1,0 +1,138 @@
+{
+  "task_id": "generate_1740946906",
+  "status": "completed",
+  "message": "Data generation completed: 50 users, 50 products, 531 follows, 128 purchases",
+  "start_time": "2025-03-02T21:21:46.458808",
+  "end_time": "2025-03-02T21:22:15.934513",
+  "duration": 29.467788219451904,
+  "counts": {
+    "users": 50,
+    "products": 50,
+    "follows": 531,
+    "purchases": 128
+  },
+  "timings": {
+    "users": 17.820170402526855,
+    "products": 0.07348489761352539,
+    "follows": 9.189407587051392,
+    "purchases": 2.384725332260132,
+    "total": 29.467788219451904
+  },
+  "database_metrics": {
+    "postgresql": {
+      "users": {
+        "count": 50,
+        "total_time": 10.677026510238647,
+        "avg_time": 0.21354053020477295,
+        "rate": 4.682951751787158
+      },
+      "products": {
+        "count": 50,
+        "total_time": 0.04409093856811523,
+        "avg_time": 0.0008818187713623047,
+        "rate": 1134.019860401837
+      },
+      "follows": {
+        "count": 531,
+        "total_time": 3.5170892715454105,
+        "avg_time": 0.006623520285396253,
+        "rate": 150.9771174408315
+      },
+      "purchases": {
+        "count": 128,
+        "total_time": 1.108345627784729,
+        "avg_time": 0.008658950217068195,
+        "rate": 115.48744073257724
+      }
+    },
+    "neo4j": {
+      "users": {
+        "count": 50,
+        "total_time": 7.118017673492432,
+        "avg_time": 0.14236035346984863,
+        "rate": 7.024427627680737
+      },
+      "products": {
+        "count": 50,
+        "total_time": 0.02939395904541016,
+        "avg_time": 0.0005878791809082032,
+        "rate": 1701.029790602755
+      },
+      "follows": {
+        "count": 531,
+        "total_time": 5.275633907318114,
+        "avg_time": 0.009935280428094377,
+        "rate": 100.65141162722104
+      },
+      "purchases": {
+        "count": 128,
+        "total_time": 1.108345627784729,
+        "avg_time": 0.008658950217068195,
+        "rate": 115.48744073257724
+      }
+    },
+    "memory": {
+      "peak": 127.1015625,
+      "final": 127.0703125
+    },
+    "total_time": 0,
+    "errors": {
+      "postgresql": 0,
+      "neo4j": 0
+    }
+  },
+  "comparison": {
+    "postgresql": {
+      "total_time": 15.346552348136902,
+      "operation_times": {
+        "users": 10.677026510238647,
+        "products": 0.04409093856811523,
+        "follows": 3.5170892715454105,
+        "purchases": 1.108345627784729
+      },
+      "rates": {
+        "users": 4.682951751787158,
+        "products": 1134.019860401837,
+        "follows": 150.9771174408315,
+        "purchases": 115.48744073257724
+      }
+    },
+    "neo4j": {
+      "total_time": 13.531391167640685,
+      "operation_times": {
+        "users": 7.118017673492432,
+        "products": 0.02939395904541016,
+        "follows": 5.275633907318114,
+        "purchases": 1.108345627784729
+      },
+      "rates": {
+        "users": 7.024427627680737,
+        "products": 1701.029790602755,
+        "follows": 100.65141162722104,
+        "purchases": 115.48744073257724
+      }
+    },
+    "comparison": {
+      "faster_db": "neo4j",
+      "overall_speedup": 1.5,
+      "operations": {
+        "users": {
+          "faster": "neo4j",
+          "speedup": 1.5
+        },
+        "products": {
+          "faster": "neo4j",
+          "speedup": 1.4999999999999998
+        }
+      }
+    },
+    "memory": {
+      "peak": 127.1015625,
+      "final": 127.0703125
+    },
+    "errors": {
+      "postgresql": 0,
+      "neo4j": 0
+    }
+  }
+}

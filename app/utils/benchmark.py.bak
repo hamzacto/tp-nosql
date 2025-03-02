@@ -1,0 +1,722 @@
+import time
+import asyncio
+import logging
+import statistics
+from typing import List, Dict, Any, Callable, Tuple, Optional
+import random
+from sqlalchemy.ext.asyncio import AsyncSession
+from sqlalchemy.future import select
+from sqlalchemy import text
+from neo4j import AsyncGraphDatabase
+
+from app.models.user import User
+from app.models.product import Product
+from app.models.purchase import Purchase
+from app.services import user_service, product_service, purchase_service
+
+# Configure logging
+logging.basicConfig(level=logging.INFO)
+logger = logging.getLogger(__name__)
+
+class DatabaseBenchmark:
+    """Utility class for benchmarking PostgreSQL vs Neo4j performance."""
+    
+    def __init__(self, db: AsyncSession, neo4j_driver):
+        self.db = db
+        self.neo4j_driver = neo4j_driver
+        self.results = {
+            "postgresql": {},
+            "neo4j": {}
+        }
+    
+    async def run_benchmark(self, test_type: str = "all", max_level: int = 3, 
+                         product_id: Optional[str] = None, user_id: Optional[str] = None, 
+                         iterations: int = 5):
+        """
+        Run benchmark tests with the specified parameters.
+        
+        Parameters:
+        - test_type: Type of test to run (all, product_virality, user_influence, viral_products)
+        - max_level: Maximum level for social network depth (1-5)
+        - product_id: Product ID for virality test
+        - user_id: User ID for influence test
+        - iterations: Number of iterations per test
+        """
+        logger.info(f"Starting database benchmark with test_type={test_type}, max_level={max_level}, iterations={iterations}")
+        
+        # Get sample data for benchmarks
+        users = await self._get_sample_users(100)
+        products = await self._get_sample_products(100)
+        
+        if not users or not products:
+            logger.error("Not enough data for benchmarking. Please generate data first.")
+            return self.results
+        
+        # Keep IDs as strings for consistency - conversion will happen in individual benchmark methods
+        specific_product_id = None
+        specific_user_id = None
+        
+        if product_id:
+            try:
+                # Keep as string for consistency
+                specific_product_id = str(product_id)
+                logger.info(f"Using specific product ID: {specific_product_id}")
+            except Exception as e:
+                logger.error(f"Invalid product ID format: {e}")
+        
+        if user_id:
+            try:
+                # Keep as string for consistency  
+                specific_user_id = str(user_id)
+                logger.info(f"Using specific user ID: {specific_user_id}")
+            except Exception as e:
+                logger.error(f"Invalid user ID format: {e}")
+        
+        # Run appropriate benchmarks based on test_type
+        if test_type == "all" or test_type == "basic":
+            await self._benchmark_user_retrieval(iterations, users)
+            await self._benchmark_product_retrieval(iterations, products)
+            await self._benchmark_user_follows(iterations, users)
+            await self._benchmark_product_purchases(iterations, products)
+        
+        if test_type == "all" or test_type == "product_virality":
+            # Use specific product if provided, otherwise use random ones
+            await self._benchmark_product_virality(iterations, specific_product_id or random.choice(products)["id"], max_level)
+        
+        if test_type == "all" or test_type == "user_influence":
+            # Use specific user if provided, otherwise use random ones
+            await self._benchmark_user_influence(iterations, specific_user_id or random.choice(users)["id"], max_level)
+        
+        if test_type == "all" or test_type == "viral_products":
+            await self._benchmark_viral_products(iterations, max_level)
+        
+        # Print summary
+        self._print_benchmark_summary()
+        
+        return self.results
+    
+    async def _get_sample_users(self, limit: int) -> List[Dict[str, Any]]:
+        """Get a sample of users for benchmarking."""
+        result = await self.db.execute(select(User).limit(limit))
+        users = result.scalars().all()
+        return [{"id": user.id, "name": user.name, "email": user.email} for user in users]
+    
+    async def _get_sample_products(self, limit: int) -> List[Dict[str, Any]]:
+        """Get a sample of products for benchmarking."""
+        result = await self.db.execute(select(Product).limit(limit))
+        products = result.scalars().all()
+        return [{"id": product.id, "name": product.name, "category": product.category} for product in products]
+    
+    async def _benchmark_user_retrieval(self, iterations: int, users: List[Dict[str, Any]]):
+        """Benchmark user retrieval performance."""
+        logger.info("Benchmarking user retrieval...")
+        
+        # PostgreSQL benchmark
+        pg_times = []
+        for _ in range(iterations):
+            user_id = random.choice(users)["id"]
+            start_time = time.time()
+            # Convert user_id to integer for PostgreSQL if needed
+            try:
+                pg_user_id = int(user_id)
+            except (ValueError, TypeError):
+                pg_user_id = user_id
+            await user_service.get_user(self.db, pg_user_id)
+            end_time = time.time()
+            pg_times.append(end_time - start_time)
+        
+        # Neo4j benchmark
+        neo4j_times = []
+        for _ in range(iterations):
+            user_id = random.choice(users)["id"]
+            start_time = time.time()
+            async with self.neo4j_driver.session() as session:
+                await session.run(
+                    """
+                    MATCH (u:User {id: $id})
+                    RETURN u
+                    """,
+                    id=str(user_id)
+                )
+            end_time = time.time()
+            neo4j_times.append(end_time - start_time)
+        
+        # Store results
+        self.results["postgresql"]["user_retrieval"] = {
+            "avg": statistics.mean(pg_times),
+            "min": min(pg_times),
+            "max": max(pg_times),
+            "median": statistics.median(pg_times)
+        }
+        
+        self.results["neo4j"]["user_retrieval"] = {
+            "avg": statistics.mean(neo4j_times),
+            "min": min(neo4j_times),
+            "max": max(neo4j_times),
+            "median": statistics.median(neo4j_times)
+        }
+    
+    async def _benchmark_product_retrieval(self, iterations: int, products: List[Dict[str, Any]]):
+        """Benchmark product retrieval performance."""
+        logger.info("Benchmarking product retrieval...")
+        
+        # PostgreSQL benchmark
+        pg_times = []
+        for _ in range(iterations):
+            product_id = random.choice(products)["id"]
+            start_time = time.time()
+            # Convert product_id to integer for PostgreSQL if needed
+            try:
+                pg_product_id = int(product_id)
+            except (ValueError, TypeError):
+                pg_product_id = product_id
+            await product_service.get_product(self.db, pg_product_id)
+            end_time = time.time()
+            pg_times.append(end_time - start_time)
+        
+        # Neo4j benchmark
+        neo4j_times = []
+        for _ in range(iterations):
+            product_id = random.choice(products)["id"]
+            start_time = time.time()
+            async with self.neo4j_driver.session() as session:
+                await session.run(
+                    """
+                    MATCH (p:Product {id: $id})
+                    RETURN p
+                    """,
+                    id=str(product_id)
+                )
+            end_time = time.time()
+            neo4j_times.append(end_time - start_time)
+        
+        # Store results
+        self.results["postgresql"]["product_retrieval"] = {
+            "avg": statistics.mean(pg_times),
+            "min": min(pg_times),
+            "max": max(pg_times),
+            "median": statistics.median(pg_times)
+        }
+        
+        self.results["neo4j"]["product_retrieval"] = {
+            "avg": statistics.mean(neo4j_times),
+            "min": min(neo4j_times),
+            "max": max(neo4j_times),
+            "median": statistics.median(neo4j_times)
+        }
+    
+    async def _benchmark_user_follows(self, iterations: int, users: List[Dict[str, Any]]):
+        """Benchmark user follows retrieval performance."""
+        logger.info("Benchmarking user follows retrieval...")
+        
+        # PostgreSQL benchmark
+        pg_times = []
+        for _ in range(iterations):
+            user_id = random.choice(users)["id"]
+            start_time = time.time()
+            # Convert user_id to integer for PostgreSQL if needed
+            try:
+                pg_user_id = int(user_id)
+            except (ValueError, TypeError):
+                pg_user_id = user_id
+            # Get followers using SQL
+            result = await self.db.execute(
+                select(User).join(User.followers).filter(User.id == pg_user_id)
+            )
+            _ = result.scalars().all()
+            end_time = time.time()
+            pg_times.append(end_time - start_time)
+        
+        # Neo4j benchmark
+        neo4j_times = []
+        for _ in range(iterations):
+            user_id = random.choice(users)["id"]
+            start_time = time.time()
+            async with self.neo4j_driver.session() as session:
+                await session.run(
+                    """
+                    MATCH (u:User {id: $id})<-[:FOLLOWS]-(follower:User)
+                    RETURN follower
+                    """,
+                    id=str(user_id)
+                )
+            end_time = time.time()
+            neo4j_times.append(end_time - start_time)
+        
+        # Store results
+        self.results["postgresql"]["user_follows"] = {
+            "avg": statistics.mean(pg_times) if pg_times else 0,
+            "min": min(pg_times) if pg_times else 0,
+            "max": max(pg_times) if pg_times else 0,
+            "median": statistics.median(pg_times) if pg_times else 0
+        }
+        
+        self.results["neo4j"]["user_follows"] = {
+            "avg": statistics.mean(neo4j_times) if neo4j_times else 0,
+            "min": min(neo4j_times) if neo4j_times else 0,
+            "max": max(neo4j_times) if neo4j_times else 0,
+            "median": statistics.median(neo4j_times) if neo4j_times else 0
+        }
+    
+    async def _benchmark_product_purchases(self, iterations: int, products: List[Dict[str, Any]]):
+        """Benchmark product purchases retrieval performance."""
+        logger.info("Benchmarking product purchases retrieval...")
+        
+        # PostgreSQL benchmark
+        pg_times = []
+        for _ in range(iterations):
+            product_id = random.choice(products)["id"]
+            start_time = time.time()
+            # Convert product_id to integer for PostgreSQL if needed
+            try:
+                pg_product_id = int(product_id)
+            except (ValueError, TypeError):
+                pg_product_id = product_id
+            # Get purchases using SQL
+            result = await self.db.execute(
+                select(Purchase).filter(Purchase.product_id == pg_product_id)
+            )
+            _ = result.scalars().all()
+            end_time = time.time()
+            pg_times.append(end_time - start_time)
+        
+        # Neo4j benchmark
+        neo4j_times = []
+        for _ in range(iterations):
+            product_id = random.choice(products)["id"]
+            start_time = time.time()
+            async with self.neo4j_driver.session() as session:
+                await session.run(
+                    """
+                    MATCH (u:User)-[b:BOUGHT]->(p:Product {id: $id})
+                    RETURN u, b
+                    """,
+                    id=str(product_id)
+                )
+            end_time = time.time()
+            neo4j_times.append(end_time - start_time)
+        
+        # Store results
+        self.results["postgresql"]["product_purchases"] = {
+            "avg": statistics.mean(pg_times) if pg_times else 0,
+            "min": min(pg_times) if pg_times else 0,
+            "max": max(pg_times) if pg_times else 0,
+            "median": statistics.median(pg_times) if pg_times else 0
+        }
+        
+        self.results["neo4j"]["product_purchases"] = {
+            "avg": statistics.mean(neo4j_times) if neo4j_times else 0,
+            "min": min(neo4j_times) if neo4j_times else 0,
+            "max": max(neo4j_times) if neo4j_times else 0,
+            "median": statistics.median(neo4j_times) if neo4j_times else 0
+        }
+    
+    async def _benchmark_recommendation_queries(self, iterations: int, users: List[Dict[str, Any]]):
+        """Benchmark complex recommendation queries (where Neo4j should excel)."""
+        logger.info("Benchmarking recommendation queries...")
+        
+        # PostgreSQL benchmark (complex multi-join query)
+        pg_times = []
+        for _ in range(iterations):
+            user_id = random.choice(users)["id"]
+            start_time = time.time()
+            # Convert user_id to integer for PostgreSQL if needed
+            try:
+                pg_user_id = int(user_id)
+            except (ValueError, TypeError):
+                pg_user_id = user_id
+            # Find products purchased by users that the current user follows (2-level deep)
+            query = text("""
+            WITH followed_users AS (
+                SELECT followed_id 
+                FROM follows 
+                WHERE follower_id = :user_id
+            )
+            SELECT p.* 
+            FROM products p
+            JOIN purchases pur ON p.id = pur.product_id
+            WHERE pur.user_id IN (SELECT followed_id FROM followed_users)
+            """)
+            await self.db.execute(query, {"user_id": pg_user_id})
+            end_time = time.time()
+            pg_times.append(end_time - start_time)
+        
+        # Neo4j benchmark (graph traversal query)
+        neo4j_times = []
+        for _ in range(iterations):
+            user_id = random.choice(users)["id"]
+            start_time = time.time()
+            async with self.neo4j_driver.session() as session:
+                await session.run(
+                    """
+                    MATCH (u:User {id: $id})-[:FOLLOWS]->(friend:User)-[:BOUGHT]->(p:Product)
+                    RETURN p, COUNT(friend) as buyer_count
+                    ORDER BY buyer_count DESC
+                    """,
+                    id=str(user_id)
+                )
+            end_time = time.time()
+            neo4j_times.append(end_time - start_time)
+        
+        # Store results
+        self.results["postgresql"]["recommendation_query"] = {
+            "avg": statistics.mean(pg_times) if pg_times else 0,
+            "min": min(pg_times) if pg_times else 0,
+            "max": max(pg_times) if pg_times else 0,
+            "median": statistics.median(pg_times) if pg_times else 0
+        }
+        
+        self.results["neo4j"]["recommendation_query"] = {
+            "avg": statistics.mean(neo4j_times) if neo4j_times else 0,
+            "min": min(neo4j_times) if neo4j_times else 0,
+            "max": max(neo4j_times) if neo4j_times else 0,
+            "median": statistics.median(neo4j_times) if neo4j_times else 0
+        }
+    
+    async def _benchmark_product_virality(self, iterations: int, product_id: str, max_level: int = 3):
+        """
+        Benchmark product virality analysis - finding users who bought a product and their social connections.
+        This tests multi-level traversal performance which is a key strength of graph databases.
+        """
+        logger.info(f"Benchmarking product virality for product {product_id} with max_level={max_level}...")
+        
+        # PostgreSQL benchmark
+        pg_times = []
+        for _ in range(iterations):
+            start_time = time.time()
+            
+            # This is a complex query in PostgreSQL that requires multiple joins
+            # Level 1: Direct purchasers
+            query = """
+            WITH RECURSIVE social_spread AS (
+                -- Base case: users who bought the product
+                SELECT u.id, u.name, 1 AS level
+                FROM users u
+                JOIN purchases p ON u.id = p.user_id
+                WHERE p.product_id = :product_id
+                
+                UNION
+                
+                -- Recursive case: followers of users who are in the result set
+                SELECT f.follower_id, u.name, s.level + 1
+                FROM social_spread s
+                JOIN follows f ON s.id = f.followed_id
+                JOIN users u ON f.follower_id = u.id
+                WHERE s.level < :max_level
+            )
+            SELECT level, COUNT(DISTINCT id) as user_count
+            FROM social_spread
+            GROUP BY level
+            ORDER BY level;
+            """
+            
+            # Convert product_id to integer for PostgreSQL
+            try:
+                pg_product_id = int(product_id)
+            except (ValueError, TypeError):
+                logger.error(f"Invalid product ID format for PostgreSQL: {product_id}. Using as-is.")
+                pg_product_id = product_id
+            
+            result = await self.db.execute(text(query), {"product_id": pg_product_id, "max_level": max_level})
+            _ = result.fetchall()
+            
+            end_time = time.time()
+            pg_times.append(end_time - start_time)
+        
+        # Neo4j benchmark
+        neo4j_times = []
+        for _ in range(iterations):
+            start_time = time.time()
+            
+            # Call a helper method with correct Neo4j syntax
+            neo4j_time = await self._benchmark_product_virality_neo4j(product_id, max_level)
+            neo4j_times.append(neo4j_time)
+        
+        # Store results
+        self.results["postgresql"]["product_virality"] = {
+            "avg": statistics.mean(pg_times) if pg_times else 0,
+            "min": min(pg_times) if pg_times else 0,
+            "max": max(pg_times) if pg_times else 0,
+            "median": statistics.median(pg_times) if pg_times else 0
+        }
+        
+        self.results["neo4j"]["product_virality"] = {
+            "avg": statistics.mean(neo4j_times) if neo4j_times else 0,
+            "min": min(neo4j_times) if neo4j_times else 0,
+            "max": max(neo4j_times) if neo4j_times else 0,
+            "median": statistics.median(neo4j_times) if neo4j_times else 0
+        }
+
+    async def _benchmark_product_virality_neo4j(self, product_id: str, max_level: int) -> float:
+        """Helper method with correct Neo4j query syntax for product virality benchmarking."""
+        start_time = time.time()
+        
+        # This is a natural fit for Neo4j's graph traversal - using correct Cypher syntax
+        query = """
+        MATCH (p:Product {id: $product_id})
+        CALL {
+            WITH p
+            MATCH (u:User)-[:BOUGHT]->(p)
+            RETURN u, 1 AS level
+            UNION
+            WITH p
+            UNWIND range(2, $max_level) AS level
+            MATCH (u:User)-[:BOUGHT]->(p),
+                  path = (follower:User)-[:FOLLOWS*]->(u)
+            WHERE length(path) <= level-1
+            RETURN follower AS u, level
+        }
+        RETURN level, count(DISTINCT u) AS user_count
+        ORDER BY level
+        """
+        
+        async with self.neo4j_driver.session() as session:
+            # Keep product_id as string for Neo4j
+            await session.run(query, product_id=str(product_id), max_level=max_level)
+        
+        end_time = time.time()
+        return end_time - start_time
+
+    async def _benchmark_user_influence(self, iterations: int, user_id: str, max_level: int = 3):
+        """
+        Benchmark user influence analysis - finding how a user's purchases influence their network.
+        This tests multi-level traversal and aggregation performance.
+        """
+        logger.info(f"Benchmarking user influence for user {user_id} with max_level={max_level}...")
+        
+        # PostgreSQL benchmark
+        pg_times = []
+        for _ in range(iterations):
+            start_time = time.time()
+            
+            # Complex query in PostgreSQL requiring multiple recursive CTEs
+            query = """
+            WITH RECURSIVE user_network AS (
+                -- Base case: the user
+                SELECT id, 0 AS level
+                FROM users
+                WHERE id = :user_id
+                
+                UNION
+                
+                -- Recursive case: followers of users in the network
+                SELECT f.follower_id, un.level + 1
+                FROM user_network un
+                JOIN follows f ON un.id = f.followed_id
+                WHERE un.level < :max_level
+            ),
+            user_purchases AS (
+                SELECT u.id AS user_id, p.product_id, p.created_at
+                FROM user_network u
+                JOIN purchases p ON u.id = p.user_id
+            ),
+            influence_data AS (
+                SELECT 
+                    un.level,
+                    COUNT(DISTINCT up.user_id) AS users_count,
+                    COUNT(DISTINCT up.product_id) AS products_count,
+                    COUNT(up.product_id) AS purchases_count
+                FROM user_network un
+                LEFT JOIN user_purchases up ON un.id = up.user_id
+                GROUP BY un.level
+            )
+            SELECT * FROM influence_data
+            ORDER BY level;
+            """
+            
+            # Convert user_id to integer for PostgreSQL
+            try:
+                pg_user_id = int(user_id)
+            except (ValueError, TypeError):
+                logger.error(f"Invalid user ID format for PostgreSQL: {user_id}. Using as-is.")
+                pg_user_id = user_id
+            
+            result = await self.db.execute(text(query), {"user_id": pg_user_id, "max_level": max_level})
+            _ = result.fetchall()
+            
+            end_time = time.time()
+            pg_times.append(end_time - start_time)
+        
+        # Neo4j benchmark
+        neo4j_times = []
+        for _ in range(iterations):
+            start_time = time.time()
+            
+            # Call a helper method with the correct Neo4j syntax to avoid syntax issues
+            neo4j_time = await self._benchmark_user_influence_neo4j(user_id, max_level)
+            neo4j_times.append(neo4j_time)
+                    
+        # Store results
+        self.results["postgresql"]["user_influence"] = {
+            "avg": statistics.mean(pg_times) if pg_times else 0,
+            "min": min(pg_times) if pg_times else 0,
+            "max": max(pg_times) if pg_times else 0,
+            "median": statistics.median(pg_times) if pg_times else 0
+        }
+        
+        self.results["neo4j"]["user_influence"] = {
+            "avg": statistics.mean(neo4j_times) if neo4j_times else 0,
+            "min": min(neo4j_times) if neo4j_times else 0,
+            "max": max(neo4j_times) if neo4j_times else 0,
+            "median": statistics.median(neo4j_times) if neo4j_times else 0
+        }
+        
+    async def _benchmark_user_influence_neo4j(self, user_id: str, max_level: int) -> float:
+        """Helper method with correct Neo4j query syntax for user influence benchmarking."""
+        start_time = time.time()
+        
+        # Neo4j query with corrected syntax that avoids list comprehension WHERE clause issues
+        query = """
+        MATCH (u:User {id: $user_id})
+        CALL {
+            WITH u
+            UNWIND range(0, $max_level) AS level
+            MATCH path = (u)<-[:FOLLOWS*]-(follower:User)
+            WHERE length(path) = level
+            WITH level, collect(DISTINCT follower) AS users
+            
+            // First collect users at this level
+            WITH level, users, size(users) AS users_count
+            
+            // Then find products and purchases without using problematic list comprehensions
+            OPTIONAL MATCH (user)-[:BOUGHT]->(product)
+            WHERE user IN users
+            WITH level, users_count, 
+                 count(DISTINCT product) AS products_count,
+                 count(product) AS purchases_count
+            
+            RETURN level, users_count, products_count, purchases_count
+        }
+        RETURN level, users_count, products_count, purchases_count
+        ORDER BY level
+        """
+        
+        async with self.neo4j_driver.session() as session:
+            # Keep user_id as string for Neo4j
+            await session.run(query, user_id=str(user_id), max_level=max_level)
+        
+        end_time = time.time()
+        return end_time - start_time
+
+    async def _benchmark_viral_products(self, iterations: int, max_level: int = 3):
+        """
+        Benchmark viral products analysis - finding products with the highest social spread.
+        This tests complex aggregation and pattern matching performance.
+        """
+        logger.info(f"Benchmarking viral products with max_level={max_level}...")
+        
+        # PostgreSQL benchmark
+        pg_times = []
+        for _ in range(iterations):
+            start_time = time.time()
+            
+            # Complex query in PostgreSQL
+            query = """
+            WITH RECURSIVE product_buyers AS (
+                -- Get all product purchases
+                SELECT p.product_id, p.user_id, pr.name AS product_name
+                FROM purchases p
+                JOIN products pr ON p.product_id = pr.id
+            ),
+            social_network AS (
+                -- Base case: direct purchasers
+                SELECT pb.product_id, pb.product_name, pb.user_id, 1 AS level
+                FROM product_buyers pb
+                
+                UNION
+                
+                -- Recursive case: followers who might be influenced
+                SELECT sn.product_id, sn.product_name, f.follower_id, sn.level + 1
+                FROM social_network sn
+                JOIN follows f ON sn.user_id = f.followed_id
+                WHERE sn.level < :max_level
+            ),
+            product_spread AS (
+                SELECT 
+                    product_id,
+                    product_name,
+                    COUNT(DISTINCT user_id) AS total_reach,
+                    MAX(level) AS max_level
+                FROM social_network
+                GROUP BY product_id, product_name
+            )
+            SELECT * FROM product_spread
+            ORDER BY total_reach DESC
+            LIMIT 10;
+            """
+            
+            result = await self.db.execute(text(query), {"max_level": max_level})
+            _ = result.fetchall()
+            
+            end_time = time.time()
+            pg_times.append(end_time - start_time)
+        
+        # Neo4j benchmark
+        neo4j_times = []
+        for _ in range(iterations):
+            start_time = time.time()
+            
+            # Neo4j query with correct Cypher syntax
+            query = """
+            MATCH (u:User {id: $user_id})
+            CALL {
+                WITH u
+                UNWIND range(0, $max_level) AS level
+                MATCH path = (u)<-[:FOLLOWS*]-(follower:User)
+                WHERE length(path) = level
+                WITH level, collect(DISTINCT follower) AS users
+                WITH level, users, 
+                     size(users) AS users_count,
+                     size(apoc.coll.toSet([p IN [(u2)-[:BOUGHT]->(p2) | p2] WHERE u2 IN users])) AS products_count,
+                     size([p IN [(u2)-[:BOUGHT]->(p2) | p2] WHERE u2 IN users]) AS purchases_count
+                RETURN level, users_count, products_count, purchases_count
+            }
+            RETURN level, users_count, products_count, purchases_count
+            ORDER BY level
+            """
+            
+            async with self.neo4j_driver.session() as session:
+                await session.run(query, user_id=str(user_id), max_level=max_level)
+            
+            end_time = time.time()
+            neo4j_times.append(end_time - start_time)
+        
+        # Store results
+        self.results["postgresql"]["viral_products"] = {
+            "avg": statistics.mean(pg_times) if pg_times else 0,
+            "min": min(pg_times) if pg_times else 0,
+            "max": max(pg_times) if pg_times else 0,
+            "median": statistics.median(pg_times) if pg_times else 0
+        }
+        
+        self.results["neo4j"]["viral_products"] = {
+            "avg": statistics.mean(neo4j_times) if neo4j_times else 0,
+            "min": min(neo4j_times) if neo4j_times else 0,
+            "max": max(neo4j_times) if neo4j_times else 0,
+            "median": statistics.median(neo4j_times) if neo4j_times else 0
+        }
+
+    def _print_benchmark_summary(self):
+        """Print a summary of benchmark results."""
+        logger.info("=" * 50)
+        logger.info("DATABASE BENCHMARK RESULTS (times in seconds)")
+        logger.info("=" * 50)
+        
+        for operation in self.results["postgresql"]:
+            pg_avg = self.results["postgresql"][operation]["avg"]
+            neo4j_avg = self.results["neo4j"][operation]["avg"]
+            
+            if pg_avg and neo4j_avg:
+                ratio = pg_avg / neo4j_avg if neo4j_avg > 0 else float('inf')
+                faster = "Neo4j" if neo4j_avg < pg_avg else "PostgreSQL"
+                factor = ratio if faster == "Neo4j" else (1/ratio)
+                
+                logger.info(f"Operation: {operation}")
+                logger.info(f"  PostgreSQL avg: {pg_avg:.6f}s")
+                logger.info(f"  Neo4j avg:      {neo4j_avg:.6f}s")
+                logger.info(f"  {faster} is {factor:.2f}x faster")
+                logger.info("-" * 50)
+        
+        logger.info("=" * 50)
+        
+        return self.results 
